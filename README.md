@@ -45,7 +45,7 @@ StreamNotes 是一个**本地优先 (Local-First)** 的现代化 Markdown 笔记
 
 1. **克隆项目**
    ```bash
-   git clone https://github.com/yourusername/streamnotes.git
+   git clone https://github.com/shitianyaa/markdown-notes.git
    cd streamnotes
    ```
 
