@@ -48,22 +48,6 @@ export async function verifyPermission(fileHandle: any, readWrite: boolean) {
   return false;
 }
 
-// Recursively copy directory content
-export async function copyDirectory(sourceHandle: any, destHandle: any) {
-  for await (const entry of sourceHandle.values()) {
-    if (entry.kind === 'file') {
-      const sourceFile = await entry.getFile();
-      const destFileHandle = await destHandle.getFileHandle(entry.name, { create: true });
-      const writable = await destFileHandle.createWritable();
-      await writable.write(sourceFile);
-      await writable.close();
-    } else if (entry.kind === 'directory') {
-      const newDirHandle = await destHandle.getDirectoryHandle(entry.name, { create: true });
-      await copyDirectory(entry, newDirHandle);
-    }
-  }
-}
-
 // Recursively scan a directory handle and build our internal FileSystemItem tree
 export async function scanLocalDirectory(
   dirHandle: any, 
