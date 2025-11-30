@@ -415,20 +415,44 @@ export default function App() {
            if (!parentHandle) { alert("无法访问父级目录权限。"); return; }
            
            if (item.type === 'folder') {
-               alert("当前浏览器不支持文件夹重命名。");
-               return;
+               // Try to use move method if available
+               try {
+                   // Check if parentHandle has getDirectoryHandle method
+                   if (typeof parentHandle.getDirectoryHandle === 'function') {
+                       // Create a new directory with the new name
+                       const newDirHandle = await parentHandle.getDirectoryHandle(newName, { create: true });
+                       
+                       // Move all children from old folder to new folder
+                       for await (const [childName, childHandle] of item.handle.entries()) {
+                           await childHandle.move(newDirHandle, childName);
+                       }
+                       
+                       // Delete the old folder
+                       await parentHandle.removeEntry(item.name, { recursive: false });
+                       
+                       newHandle = newDirHandle;
+                   } else {
+                       alert("当前浏览器不支持文件夹重命名操作。");
+                       return;
+                   }
+               } catch (err) {
+                   console.error("Folder rename failed:", err);
+                   alert("文件夹重命名失败：" + (err as Error).message);
+                   return;
+               }
+           } else {
+               // File Copy-Delete Strategy
+               let content = item.content;
+               if (!item.isLoaded) {
+                 const fileData = await item.handle.getFile();
+                 content = await fileData.text();
+               }
+               newHandle = await parentHandle.getFileHandle(newName, { create: true });
+               const writable = await newHandle.createWritable();
+               await writable.write(content || '');
+               await writable.close();
+               await parentHandle.removeEntry(item.name);
            }
-           // File Copy-Delete Strategy
-           let content = item.content;
-           if (!item.isLoaded) {
-             const fileData = await item.handle.getFile();
-             content = await fileData.text();
-           }
-           newHandle = await parentHandle.getFileHandle(newName, { create: true });
-           const writable = await newHandle.createWritable();
-           await writable.write(content || '');
-           await writable.close();
-           await parentHandle.removeEntry(item.name);
         }
       } catch (err) {
         console.error("Rename failed", err);
