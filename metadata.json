@@ -1,0 +1,5 @@
+{
+  "name": "StreamNotes",
+  "description": "A powerful, local-first Markdown note-taking application featuring folder organization, full-text search, and a rich editing toolbar.",
+  "requestFramePermissions": []
+}
