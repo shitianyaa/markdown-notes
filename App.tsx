@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import Editor from './components/Editor';
 import { FileSystemItem } from './types';
-import { initialData, generateId, deleteItemRecursive, scanLocalDirectory, verifyPermission, copyDirectory } from './utils/fsHelpers';
+import { initialData, generateId, deleteItemRecursive, scanLocalDirectory, verifyPermission } from './utils/fsHelpers';
 import { Menu, Loader2, Info } from 'lucide-react';
 
 const STORAGE_KEY = 'streamnotes_fs_data';
@@ -400,16 +400,11 @@ export default function App() {
     }
 
     let newHandle: any = null;
-    let performFullRescan = false;
-
     if (isLocalMode && item.handle) {
       try {
-        // 1. Try native move() first (Chrome 110+)
         if (typeof item.handle.move === 'function') {
            await item.handle.move(newName);
-        } 
-        else {
-           // 2. Fallback: Copy & Delete
+        } else {
            let parentHandle: any = null;
            if (item.parentId) {
                const parentItem = fileSystem.find(p => p.id === item.parentId);
@@ -420,59 +415,28 @@ export default function App() {
            if (!parentHandle) { alert("无法访问父级目录权限。"); return; }
            
            if (item.type === 'folder') {
-               // Recursive Copy for Folders
-               const newDirHandle = await parentHandle.getDirectoryHandle(newName, { create: true });
-               await copyDirectory(item.handle, newDirHandle);
-               await parentHandle.removeEntry(item.name, { recursive: true });
-               
-               // For folders, invalidating handles is tricky. It's safer to rescan.
-               performFullRescan = true;
-           } else {
-               // File Copy
-               // Read file content as Blob to support binary files (like images)
-               const fileData = await item.handle.getFile();
-               
-               newHandle = await parentHandle.getFileHandle(newName, { create: true });
-               const writable = await newHandle.createWritable();
-               await writable.write(fileData);
-               await writable.close();
-               
-               await parentHandle.removeEntry(item.name);
+               alert("当前浏览器不支持文件夹重命名。");
+               return;
            }
+           // File Copy-Delete Strategy
+           let content = item.content;
+           if (!item.isLoaded) {
+             const fileData = await item.handle.getFile();
+             content = await fileData.text();
+           }
+           newHandle = await parentHandle.getFileHandle(newName, { create: true });
+           const writable = await newHandle.createWritable();
+           await writable.write(content || '');
+           await writable.close();
+           await parentHandle.removeEntry(item.name);
         }
       } catch (err) {
         console.error("Rename failed", err);
-        alert("重命名操作失败 (可能是权限不足或文件被占用)");
         return;
       }
     }
 
-    if (performFullRescan && isLocalMode) {
-         // Rescan to ensure all children have valid handles
-         const newItems = await scanLocalDirectory(rootDirHandleRef.current);
-         // Restore open folders state (best effort by name match)
-         const openFolderNames = new Set(fileSystem.filter(i => i.isOpen).map(i => i.name));
-         if (item.isOpen) openFolderNames.add(newName); 
-
-         // Try to preserve active file selection if it wasn't destroyed
-         const activeItem = fileSystem.find(i => i.id === activeFileId);
-         let newActiveId = null;
-         if (activeItem) {
-             const match = newItems.find(i => i.name === activeItem.name && i.type === activeItem.type);
-             if (match) newActiveId = match.id;
-         }
-
-         setFileSystem(newItems.map(i => ({
-             ...i,
-             isOpen: i.type === 'folder' && openFolderNames.has(i.name)
-         })));
-         
-         if (newActiveId) setActiveFileId(newActiveId);
-
-    } else {
-        // Simple state update
-        setFileSystem(prev => prev.map(i => i.id === id ? { ...i, name: newName, updatedAt: Date.now(), handle: newHandle || i.handle } : i));
-    }
+    setFileSystem(prev => prev.map(i => i.id === id ? { ...i, name: newName, updatedAt: Date.now(), handle: newHandle || i.handle } : i));
   };
 
   const handleDeleteItem = async (id: string, skipConfirm = false) => {
