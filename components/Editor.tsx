@@ -12,16 +12,16 @@ import {
   Heading2, 
   Quote, 
   Link as LinkIcon, 
-  Save,
-  Check,
-  Strikethrough,
-  Highlighter,
-  Minus,
-  Eye,
-  Columns,
-  PenLine,
-  Image as ImageIcon,
-  Link2,
+  Save, 
+  Check, 
+  Strikethrough, 
+  Highlighter, 
+  Minus, 
+  Eye, 
+  Columns, 
+  PenLine, 
+  Image as ImageIcon, 
+  Link2, 
   Unlink2
 } from 'lucide-react';
 
@@ -32,6 +32,8 @@ interface EditorProps {
   onUploadImage?: (file: File) => Promise<string>;
   assets?: Record<string, string>; // Map of filename -> objectUrl/dataUrl
   readOnly?: boolean;
+  theme?: 'light' | 'dark';
+  onShowToast?: (message: string, type?: 'success' | 'error' | 'warning' | 'info', duration?: number) => void;
 }
 
 type ViewMode = 'edit' | 'split' | 'read';
@@ -42,7 +44,9 @@ const Editor: React.FC<EditorProps> = ({
   onUpdate, 
   onUploadImage, 
   assets = {},
-  readOnly = false 
+  readOnly = false,
+  theme = 'light',
+  onShowToast 
 }) => {
   const [viewMode, setViewMode] = useState<ViewMode>('split');
   const [localContent, setLocalContent] = useState(content);
@@ -219,7 +223,7 @@ const Editor: React.FC<EditorProps> = ({
       
     } catch (error) {
       console.error("Image upload failed", error);
-      alert("图片上传失败");
+      onShowToast?.("图片上传失败", "error");
     }
   };
 
@@ -238,7 +242,7 @@ const Editor: React.FC<EditorProps> = ({
     }
   };
 
-  // Custom Image Renderer to resolve local assets
+  // Custom Image Renderer to resolve local assets and optimize for dark mode
   const ImageRenderer = ({ src, alt, ...props }: any) => {
     // Check if src is a relative path that matches one of our loaded assets
     let finalSrc = src;
@@ -253,12 +257,19 @@ const Editor: React.FC<EditorProps> = ({
     }
 
     return (
-      <img 
-        src={finalSrc} 
-        alt={alt} 
-        className="max-w-full rounded-lg border border-slate-200 shadow-sm my-4"
-        {...props} 
-      />
+      <div className="my-4">
+        <img 
+          src={finalSrc} 
+          alt={alt} 
+          className="max-w-full rounded-lg border border-[var(--border-color)] my-4"
+          style={{
+            // Apply subtle image optimization for dark mode
+            filter: theme === 'dark' ? 'brightness(0.9) contrast(0.95) saturate(0.9)' : 'none',
+            transition: 'filter 0.3s ease'
+          }}
+          {...props} 
+        />
+      </div>
     );
   };
 
@@ -274,15 +285,126 @@ const Editor: React.FC<EditorProps> = ({
       className={`p-1.5 rounded-md transition-all flex-shrink-0 ${
         active 
           ? 'bg-primary-100 text-primary-600' 
-          : 'text-slate-500 hover:bg-slate-200 hover:text-slate-900'
+          : 'text-[var(--text-tertiary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]'
       }`}
     >
       <Icon size={16} />
     </button>
   );
 
+  // Export functions
+  const exportToLongImage = async () => {
+    try {
+      // Check if html2canvas is available
+      if (typeof window.html2canvas === 'undefined') {
+        // Dynamically load html2canvas
+        const script = document.createElement('script');
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+        script.onload = async () => {
+          await performLongImageExport();
+        };
+        document.body.appendChild(script);
+      } else {
+        await performLongImageExport();
+      }
+    } catch (error) {
+      console.error('Failed to export as long image:', error);
+      onShowToast?.('导出长图失败', 'error');
+    }
+  };
+
+  const performLongImageExport = async () => {
+    // Get the actual markdown content element instead of the scroll container
+    const markdownElement = previewRef.current?.querySelector('.markdown-body');
+    if (!markdownElement) {
+      console.error('Markdown element not found');
+      onShowToast?.('导出长图失败：未找到内容元素', 'error');
+      return;
+    }
+
+    // Show loading state
+    const originalCursor = document.body.style.cursor;
+    document.body.style.cursor = 'wait';
+
+    try {
+      // Create a clone of the markdown element to avoid affecting the original
+      const clone = markdownElement.cloneNode(true) as HTMLElement;
+      
+      // Set styles for the clone
+      clone.style.maxWidth = '800px';
+      clone.style.padding = '40px';
+      clone.style.backgroundColor = 'white';
+      clone.style.color = 'black';
+      clone.style.position = 'absolute';
+      clone.style.top = '0';
+      clone.style.left = '-9999px';
+      clone.style.width = '800px';
+      clone.style.zIndex = '9999';
+      
+      // Add clone to document
+      document.body.appendChild(clone);
+
+      // Add temporary styles for better export quality
+      const exportStyle = document.createElement('style');
+      exportStyle.innerHTML = `
+        /* Ensure images are properly displayed */
+        img {
+          max-width: 100% !important;
+          height: auto !important;
+          object-fit: contain !important;
+        }
+        
+        /* Ensure proper display for all elements */
+        * {
+          box-sizing: border-box !important;
+        }
+      `;
+      document.head.appendChild(exportStyle);
+
+      // Use html2canvas to capture the cloned element as a long image
+      const canvas = await window.html2canvas(clone, {
+        scale: 2, // Higher scale for better quality
+        useCORS: true, // Enable CORS for images
+        backgroundColor: '#ffffff', // Set white background for dark mode
+        logging: true, // Enable logging for debugging
+        scrollX: 0,
+        scrollY: 0,
+        windowWidth: clone.offsetWidth,
+        windowHeight: clone.offsetHeight
+      });
+
+      // Convert canvas to blob and download
+      canvas.toBlob((blob) => {
+        if (blob) {
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `${fileName.replace('.md', '')}.png`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+          onShowToast?.('导出长图成功', 'success');
+        } else {
+          console.error('Failed to create blob from canvas');
+          onShowToast?.('导出长图失败：无法创建图片文件', 'error');
+        }
+      }, 'image/png', 0.9); // Use PNG format for better quality
+
+      // Clean up
+      document.head.removeChild(exportStyle);
+      document.body.removeChild(clone);
+    } catch (error) {
+      console.error('Long image export failed:', error);
+      onShowToast?.(`导出长图失败：${error instanceof Error ? error.message : '未知错误'}`, 'error');
+    } finally {
+      // Restore cursor
+      document.body.style.cursor = originalCursor;
+    }
+  };
+
   return (
-    <div className="flex flex-col h-full bg-white relative">
+    <div className="flex flex-col h-full bg-[var(--bg-primary)] relative">
       <input 
         type="file" 
         ref={fileInputRef} 
@@ -292,14 +414,14 @@ const Editor: React.FC<EditorProps> = ({
       />
 
       {/* Top Bar */}
-      <div className="h-14 border-b border-slate-200 flex items-center justify-between px-6 bg-white z-10 sticky top-0 print:hidden">
+      <div className="h-14 border-b border-[var(--border-color)] flex items-center justify-between px-6 bg-[var(--bg-primary)] z-10 sticky top-0 print:hidden">
         <div className="flex items-center gap-3 overflow-hidden">
-            <div className="font-mono text-[10px] font-bold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 uppercase tracking-wide">
+            <div className="font-mono text-[10px] font-bold text-[var(--text-tertiary)] bg-[var(--bg-secondary)] px-1.5 py-0.5 rounded border border-[var(--border-color)] uppercase tracking-wide">
                 MD
             </div>
-            <h1 className="text-lg font-semibold text-slate-800 truncate max-w-[200px] md:max-w-md" title={fileName}>{fileName}</h1>
+            <h1 className="text-lg font-semibold text-[var(--text-primary)] truncate max-w-[200px] md:max-w-md" title={fileName}>{fileName}</h1>
             {isSaving ? (
-                <span className="text-xs text-slate-400 flex items-center gap-1 animate-pulse">
+                <span className="text-xs text-[var(--text-tertiary)] flex items-center gap-1 animate-pulse">
                     <Save size={12} /> 保存中...
                 </span>
             ) : (
@@ -310,42 +432,50 @@ const Editor: React.FC<EditorProps> = ({
         </div>
         
         <div className="flex items-center gap-3">
+          {/* Export Button */}
+          <button
+            onClick={exportToLongImage}
+            title="导出为长图"
+            className="flex items-center gap-1 px-2 py-1.5 rounded-md text-xs font-medium transition-colors border bg-[var(--bg-primary)] text-[var(--text-tertiary)] border-transparent hover:bg-[var(--bg-secondary)]"
+          >
+            <ImageIcon size={14} />
+            <span className="hidden sm:inline">长图</span>
+          </button>
+
+          <div className="h-4 w-px bg-[var(--border-color)] mx-1"></div>
+
           {viewMode === 'split' && (
              <button
                onClick={() => setSyncScroll(!syncScroll)}
                title={syncScroll ? "同步滚动: 开启" : "同步滚动: 关闭"}
-               className={`flex items-center gap-1 px-2 py-1.5 rounded-md text-xs font-medium transition-colors border ${
-                 syncScroll 
-                  ? 'bg-blue-50 text-blue-600 border-blue-200' 
-                  : 'bg-white text-slate-500 border-transparent hover:bg-slate-50'
-               }`}
+               className={`flex items-center gap-1 px-2 py-1.5 rounded-md text-xs font-medium transition-colors border ${syncScroll ? 'bg-blue-50 text-blue-600 border-blue-200' : 'bg-[var(--bg-primary)] text-[var(--text-tertiary)] border-transparent hover:bg-[var(--bg-secondary)]'}`}
              >
                {syncScroll ? <Link2 size={14} /> : <Unlink2 size={14} />}
                <span className="hidden sm:inline">同步</span>
              </button>
           )}
 
-          <div className="h-4 w-px bg-slate-300 mx-1"></div>
+          <div className="h-4 w-px bg-[var(--border-color)] mx-1"></div>
 
-          <div className="flex items-center gap-0.5 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+          <div className="flex items-center gap-0.5 bg-[var(--bg-secondary)] p-0.5 rounded-lg border border-[var(--border-color)]">
             <button
               onClick={() => setViewMode('edit')}
               title="编辑模式"
-              className={`p-1.5 rounded-md transition-all ${viewMode === 'edit' ? 'bg-white text-primary-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              className={`p-1.5 rounded-md transition-all ${viewMode === 'edit' ? 'bg-[var(--bg-primary)] text-primary-600' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}`}
             >
               <PenLine size={14} />
             </button>
             <button
               onClick={() => setViewMode('split')}
               title="分栏模式"
-              className={`p-1.5 rounded-md transition-all ${viewMode === 'split' ? 'bg-white text-primary-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              className={`p-1.5 rounded-md transition-all ${viewMode === 'split' ? 'bg-[var(--bg-primary)] text-primary-600' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}`}
             >
               <Columns size={14} />
             </button>
             <button
               onClick={() => setViewMode('read')}
               title="阅读模式"
-              className={`p-1.5 rounded-md transition-all ${viewMode === 'read' ? 'bg-white text-primary-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              className={`p-1.5 rounded-md transition-all ${viewMode === 'read' ? 'bg-[var(--bg-primary)] text-primary-600' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}`}
             >
               <Eye size={14} />
             </button>
@@ -355,20 +485,20 @@ const Editor: React.FC<EditorProps> = ({
 
       {/* Toolbar */}
       {viewMode !== 'read' && (
-        <div className="border-b border-slate-200 px-4 py-2 flex items-center gap-1 bg-slate-50 overflow-x-auto no-scrollbar print:hidden">
+        <div className="border-b border-[var(--border-color)] px-4 py-2 flex items-center gap-1 bg-[var(--bg-secondary)] overflow-x-auto no-scrollbar print:hidden">
           <ToolbarButton icon={Heading1} onClick={() => insertMarkdown('# ')} tooltip="一级标题" />
           <ToolbarButton icon={Heading2} onClick={() => insertMarkdown('## ')} tooltip="二级标题" />
-          <div className="w-px h-4 bg-slate-300 mx-1"></div>
+          <div className="w-px h-4 bg-[var(--border-color)] mx-1"></div>
           <ToolbarButton icon={Bold} onClick={() => insertMarkdown('**', '**')} tooltip="加粗 (Ctrl+B)" />
           <ToolbarButton icon={Italic} onClick={() => insertMarkdown('*', '*')} tooltip="斜体 (Ctrl+I)" />
           <ToolbarButton icon={Strikethrough} onClick={() => insertMarkdown('~~', '~~')} tooltip="删除线" />
           <ToolbarButton icon={Highlighter} onClick={() => insertMarkdown('<mark>', '</mark>')} tooltip="高亮" />
-          <div className="w-px h-4 bg-slate-300 mx-1"></div>
+          <div className="w-px h-4 bg-[var(--border-color)] mx-1"></div>
           <ToolbarButton icon={List} onClick={() => insertMarkdown('- ')} tooltip="无序列表" />
           <ToolbarButton icon={ListOrdered} onClick={() => insertMarkdown('1. ')} tooltip="有序列表" />
           <ToolbarButton icon={Code} onClick={insertCodeBlock} tooltip="代码块" />
           <ToolbarButton icon={Quote} onClick={insertQuote} tooltip="引用" />
-          <div className="w-px h-4 bg-slate-300 mx-1"></div>
+          <div className="w-px h-4 bg-[var(--border-color)] mx-1"></div>
           <ToolbarButton icon={LinkIcon} onClick={() => insertMarkdown('[', '](url)')} tooltip="链接 (Ctrl+K)" />
           <ToolbarButton icon={ImageIcon} onClick={handleImageClick} tooltip="插入图片" />
           <ToolbarButton icon={Minus} onClick={() => insertMarkdown('\n---\n')} tooltip="分割线" />
@@ -381,7 +511,7 @@ const Editor: React.FC<EditorProps> = ({
         <div className={`
           h-full relative transition-all duration-300
           ${viewMode === 'read' ? 'hidden' : 'block'} 
-          ${viewMode === 'split' ? 'w-1/2 border-r border-slate-200' : 'w-full'}
+          ${viewMode === 'split' ? 'w-1/2 border-r border-[var(--border-color)]' : 'w-full'}
           print:hidden
         `}>
           <textarea
@@ -390,7 +520,7 @@ const Editor: React.FC<EditorProps> = ({
             onScroll={() => handleScroll('editor')}
             onChange={(e) => setLocalContent(e.target.value)}
             onKeyDown={handleKeyDown}
-            className="w-full h-full p-8 resize-none focus:outline-none font-mono text-sm leading-relaxed text-slate-700 bg-white"
+            className="w-full h-full p-8 resize-none focus:outline-none font-mono text-sm leading-relaxed text-[var(--text-primary)] bg-[var(--editor-bg)]"
             placeholder="开始写作..."
             spellCheck={false}
           />
@@ -401,13 +531,13 @@ const Editor: React.FC<EditorProps> = ({
           ref={previewRef}
           onScroll={() => handleScroll('preview')}
           className={`
-          h-full overflow-y-auto bg-white transition-all duration-300
+          h-full overflow-y-auto bg-[var(--preview-bg)] transition-all duration-300
           ${viewMode === 'edit' ? 'hidden' : 'block'}
           ${viewMode === 'split' ? 'w-1/2' : 'w-full'}
           print:block print:w-full print:overflow-visible print:h-auto
         `}>
           <div className={`
-            mx-auto p-8 markdown-body text-slate-800 transition-all duration-300
+            mx-auto p-8 markdown-body transition-all duration-300
             ${viewMode === 'read' ? 'max-w-4xl' : 'max-w-3xl'}
             print:max-w-none print:p-0
           `}>
@@ -424,7 +554,7 @@ const Editor: React.FC<EditorProps> = ({
                     {localContent}
                 </ReactMarkdown>
              ) : (
-                <div className="h-full flex flex-col items-center justify-center text-slate-300 print:hidden">
+                <div className="h-full flex flex-col items-center justify-center text-[var(--text-tertiary)] print:hidden">
                     <p className="italic">预览模式</p>
                 </div>
              )}
