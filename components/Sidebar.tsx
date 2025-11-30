@@ -12,10 +12,13 @@ import {
   Upload,
   HardDrive,
   Edit2,
-  Eraser
+  Eraser,
+  Moon,
+  Sun
 } from 'lucide-react';
-import { FileSystemItem } from '../types';
-import { getChildItems } from '../utils/fsHelpers';
+import { FileSystemItem, SearchResult } from '../types';
+import { getChildItems, searchFileSystem } from '../utils/fsHelpers';
+import HighlightedText from './HighlightedText';
 
 interface SidebarProps {
   items: FileSystemItem[];
@@ -28,8 +31,11 @@ interface SidebarProps {
   searchQuery: string;
   onSearchChange: (query: string) => void;
   onOpenLocalFolder: () => void;
+  onSwitchToBrowserMode?: () => void;
   onCleanupAssets: () => void;
   isLocalMode: boolean;
+  theme: 'light' | 'dark';
+  onToggleTheme: () => void;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({
@@ -43,8 +49,11 @@ const Sidebar: React.FC<SidebarProps> = ({
   searchQuery,
   onSearchChange,
   onOpenLocalFolder,
+  onSwitchToBrowserMode,
   onCleanupAssets,
-  isLocalMode
+  isLocalMode,
+  theme,
+  onToggleTheme
 }) => {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -94,34 +103,42 @@ const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
+  // Get search results
+  const getSearchResults = (): SearchResult[] => {
+    return searchFileSystem(items, searchQuery);
+  };
+
+  // Check if a folder should be open based on search results
+  const shouldFolderBeOpen = (folderId: string, searchResults: SearchResult[]): boolean => {
+    const hasMatchingChildren = searchResults.some(result => {
+      const item = result.item;
+      return item.parentId === folderId && result.matches;
+    });
+    return hasMatchingChildren;
+  };
+
   // Recursive Tree Item Renderer
   const renderTreeItem = (item: FileSystemItem, depth: number = 0) => {
     // FILTER: Only show Folders and Markdown files
     const isMarkdownOrFolder = item.type === 'folder' || item.name.toLowerCase().endsWith('.md');
     if (!isMarkdownOrFolder) return null;
 
-    const isVisible = searchQuery 
-      ? item.name.toLowerCase().includes(searchQuery.toLowerCase()) 
-      : true;
-
+    const searchResults = getSearchResults();
+    const itemResult = searchResults.find(result => result.item.id === item.id);
+    
+    // Check if this item matches the search
+    const isItemMatch = itemResult?.matches || false;
+    
     // Check if children have matches to keep folder open
-    const children = getChildItems(items, item.id);
-    const hasVisibleChildren = (items: FileSystemItem[], parentId: string): boolean => {
-       const childs = getChildItems(items, parentId);
-       return childs.some(c => {
-         const isMdOrDir = c.type === 'folder' || c.name.toLowerCase().endsWith('.md');
-         if (!isMdOrDir) return false;
-         
-         return c.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-         (c.type === 'folder' && hasVisibleChildren(items, c.id));
-       });
-    };
+    const isFolderOpen = searchQuery 
+      ? shouldFolderBeOpen(item.id, searchResults) || item.isOpen
+      : item.isOpen;
 
-    const shouldShow = isVisible || (item.type === 'folder' && hasVisibleChildren(items, item.id));
+    // Check if this item should be shown
+    const shouldShow = !searchQuery || isItemMatch || (item.type === 'folder' && shouldFolderBeOpen(item.id, searchResults));
     
     if (searchQuery && !shouldShow) return null;
 
-    const isOpen = searchQuery ? true : item.isOpen;
     const isEditing = editingId === item.id;
 
     return (
@@ -130,8 +147,10 @@ const Sidebar: React.FC<SidebarProps> = ({
           className={`
             group flex items-center justify-between py-1 px-2 cursor-pointer select-none text-sm transition-colors border-l-2
             ${item.id === activeFileId 
-              ? 'bg-primary-50 text-primary-700 font-medium border-primary-500' 
-              : 'border-transparent text-slate-600 hover:bg-slate-100'}
+              ? 'bg-[var(--bg-tertiary)] text-[var(--text-primary)] font-medium border-[#238636]' 
+              : isItemMatch 
+                ? 'bg-yellow-50 text-[var(--text-primary)] font-medium border-yellow-300' 
+                : 'border-transparent text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'}
           `}
           style={{ paddingLeft: `${depth * 12 + 8}px` }}
           onClick={() => {
@@ -145,12 +164,12 @@ const Sidebar: React.FC<SidebarProps> = ({
           <div className="flex items-center gap-2 truncate flex-1 h-6">
             {item.type === 'folder' && (
               <span className="opacity-70 text-slate-400 flex-shrink-0">
-                {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                {isFolderOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
               </span>
             )}
             <span className={`flex-shrink-0 ${item.type === 'folder' ? 'text-amber-400' : 'text-slate-400'}`}>
               {item.type === 'folder' ? (
-                isOpen ? <FolderOpen size={16} /> : <Folder size={16} />
+                isFolderOpen ? <FolderOpen size={16} /> : <Folder size={16} />
               ) : (
                 <FileText size={16} />
               )}
@@ -168,7 +187,11 @@ const Sidebar: React.FC<SidebarProps> = ({
                 className="flex-1 min-w-0 bg-white border border-primary-300 rounded px-1 text-sm focus:outline-none focus:border-primary-500 h-6 font-mono"
               />
             ) : (
-              <span className="truncate">{item.name}</span>
+              <HighlightedText 
+                text={item.name} 
+                matches={itemResult?.nameMatches} 
+                className="truncate"
+              />
             )}
           </div>
 
@@ -195,14 +218,14 @@ const Sidebar: React.FC<SidebarProps> = ({
               )}
               <button
                 onClick={(e) => startRenaming(e, item)}
-                className="p-1 hover:bg-white hover:shadow-sm rounded text-slate-500 hover:text-blue-600"
+                className="p-1 hover:bg-[var(--bg-secondary)] rounded text-[var(--text-tertiary)] hover:text-blue-600"
                 title="重命名"
               >
                 <Edit2 size={14} />
               </button>
               <button
                 onClick={(e) => { e.stopPropagation(); onDeleteItem(item.id); }}
-                className="p-1 hover:bg-red-50 hover:text-red-600 rounded text-slate-400"
+                className="p-1 hover:bg-red-50 hover:text-red-600 rounded text-[var(--text-tertiary)]"
                 title="删除"
               >
                 <Trash2 size={14} />
@@ -212,9 +235,9 @@ const Sidebar: React.FC<SidebarProps> = ({
         </div>
 
         {/* Children Recursion */}
-        {item.type === 'folder' && isOpen && (
+        {item.type === 'folder' && isFolderOpen && (
           <div>
-            {children.map(child => renderTreeItem(child, depth + 1))}
+            {getChildItems(items, item.id).map(child => renderTreeItem(child, depth + 1))}
           </div>
         )}
       </div>
@@ -224,34 +247,58 @@ const Sidebar: React.FC<SidebarProps> = ({
   const rootItems = getChildItems(items, null);
 
   return (
-    <div className="flex flex-col h-full bg-slate-50 border-r border-slate-200 w-64 flex-shrink-0">
+    <div className="flex flex-col h-full bg-[var(--sidebar-bg)] border-r border-[var(--border-color)] w-64 flex-shrink-0">
       {/* Header */}
-      <div className="p-4 border-b border-slate-200 bg-white shadow-sm z-10">
-        <div className="flex items-center gap-2 font-bold text-slate-800 mb-4">
-          <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-white shadow-sm transition-colors ${isLocalMode ? 'bg-indigo-600' : 'bg-primary-600'}`}>
-            {isLocalMode ? <HardDrive size={18} /> : <FileText size={18} />}
+      <div className="p-4 border-b border-[var(--border-color)] bg-[var(--bg-primary)] z-10">
+        <div className="flex items-center justify-between font-bold text-[var(--text-primary)] mb-4">
+          <div className="flex items-center gap-2">
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-white transition-colors ${isLocalMode ? 'bg-indigo-600' : 'bg-primary-600'}`}>
+              {isLocalMode ? <HardDrive size={18} /> : <FileText size={18} />}
+            </div>
+            <div className="flex flex-col leading-none">
+              <span className="text-sm">StreamNotes</span>
+              <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider mt-1">{isLocalMode ? '本地模式' : '浏览器模式'}</span>
+            </div>
           </div>
-          <div className="flex flex-col leading-none">
-            <span className="text-sm">StreamNotes</span>
-            <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider mt-1">{isLocalMode ? '本地模式' : '浏览器模式'}</span>
-          </div>
+          {/* Theme Toggle */}
+          <button
+            onClick={onToggleTheme}
+            className="p-2 rounded-full hover:bg-slate-100 transition-colors text-slate-500 hover:text-slate-700"
+            title={theme === 'light' ? '切换到深色主题' : '切换到浅色主题'}
+          >
+            {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
+          </button>
         </div>
 
         {/* Mode Switcher */}
-        <button
-          onClick={onOpenLocalFolder}
-          className="w-full mb-3 flex items-center justify-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold py-2 px-3 rounded-md transition-colors border border-slate-200"
-          title="打开电脑上的目录"
-        >
-          {isLocalMode ? '切换文件夹' : '打开本地文件夹'}
-          <Upload size={14} />
-        </button>
+        <div className="space-y-2 mb-3">
+          <button
+            onClick={onOpenLocalFolder}
+            className="w-full flex items-center justify-center gap-2 bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs font-semibold py-2 px-3 rounded-md transition-colors border border-[var(--border-color)]"
+            title="打开电脑上的目录"
+          >
+            {isLocalMode ? '切换文件夹' : '打开本地文件夹'}
+            <Upload size={14} />
+          </button>
+          
+          {/* Switch to Browser Mode Button */}
+          {isLocalMode && onSwitchToBrowserMode && (
+            <button
+              onClick={onSwitchToBrowserMode}
+              className="w-full flex items-center justify-center gap-2 bg-blue-50 hover:bg-blue-100 text-blue-600 text-xs font-semibold py-2 px-3 rounded-md transition-colors border border-blue-200"
+              title="切换到浏览器存储模式"
+            >
+              切换到浏览器模式
+              <FileText size={14} />
+            </button>
+          )}
+        </div>
 
         {/* Root Actions & Clean */}
         <div className="flex gap-2 mb-3">
           <button 
             onClick={() => onCreateItem('file', null)}
-            className="flex-1 flex items-center justify-center gap-1 bg-white border border-slate-200 hover:border-primary-300 hover:text-primary-600 text-slate-600 text-xs font-medium py-1.5 px-2 rounded shadow-sm transition-all"
+            className="flex-1 flex items-center justify-center gap-1 bg-[var(--bg-primary)] border border-[var(--border-color)] hover:border-primary-300 hover:text-primary-600 text-[var(--text-primary)] text-xs font-medium py-1.5 px-2 rounded transition-all"
             title="新建根目录笔记"
           >
             <FilePlus size={14} />
@@ -259,7 +306,7 @@ const Sidebar: React.FC<SidebarProps> = ({
           </button>
           <button 
             onClick={() => onCreateItem('folder', null)}
-            className="flex-1 flex items-center justify-center gap-1 bg-white border border-slate-200 hover:border-primary-300 hover:text-primary-600 text-slate-600 text-xs font-medium py-1.5 px-2 rounded shadow-sm transition-all"
+            className="flex-1 flex items-center justify-center gap-1 bg-[var(--bg-primary)] border border-[var(--border-color)] hover:border-primary-300 hover:text-primary-600 text-[var(--text-primary)] text-xs font-medium py-1.5 px-2 rounded transition-all"
             title="新建根目录文件夹"
           >
             <FolderPlus size={14} />
@@ -267,7 +314,7 @@ const Sidebar: React.FC<SidebarProps> = ({
           </button>
           <button
             onClick={onCleanupAssets}
-            className="flex-shrink-0 flex items-center justify-center w-8 bg-white border border-slate-200 hover:border-red-300 hover:text-red-600 text-slate-500 text-xs font-medium py-1.5 rounded shadow-sm transition-all"
+            className="flex-shrink-0 flex items-center justify-center w-8 bg-[var(--bg-primary)] border border-[var(--border-color)] hover:border-red-300 hover:text-red-600 text-[var(--text-secondary)] text-xs font-medium py-1.5 rounded transition-all"
             title="清理未引用的图片"
           >
             <Eraser size={14} />
@@ -276,13 +323,13 @@ const Sidebar: React.FC<SidebarProps> = ({
 
         {/* Search */}
         <div className="relative group">
-          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-primary-500 transition-colors" />
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-tertiary)] group-focus-within:text-primary-500 transition-colors" />
           <input 
             type="text" 
             placeholder="搜索笔记..." 
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
-            className="w-full pl-8 pr-3 py-1.5 text-sm bg-slate-50 border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-100 focus:border-primary-400 transition-all placeholder:text-slate-400"
+            className="w-full pl-8 pr-3 py-1.5 text-sm bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-md focus:outline-none focus:ring-2 focus:ring-primary-100 focus:border-primary-400 transition-all placeholder:text-[var(--text-tertiary)]"
           />
         </div>
       </div>
@@ -300,7 +347,7 @@ const Sidebar: React.FC<SidebarProps> = ({
       </div>
       
       {/* Footer / Status */}
-      <div className="p-2 border-t border-slate-200 bg-slate-50 text-[10px] text-slate-400 text-center flex items-center justify-center gap-1">
+      <div className="p-2 border-t border-[var(--border-color)] bg-[var(--sidebar-bg)] text-[10px] text-[var(--text-tertiary)] text-center flex items-center justify-center gap-1">
         {isLocalMode ? (
            <>
              <HardDrive size={10} /> 正在同步到硬盘
