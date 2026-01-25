@@ -15,7 +15,16 @@ export interface FileSystemItem {
 
 export type FileSystemState = FileSystemItem[];
 
+export interface SearchMatch {
+  text: string;
+  start: number;
+  end: number;
+}
+
 export interface SearchResult {
   item: FileSystemItem;
   matches: boolean;
+  nameMatches?: SearchMatch[];
+  contentMatches?: SearchMatch[];
+  matchCount: number;
 }
