@@ -1,15 +1,18 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import Editor from './components/Editor';
+import ToastContainer from './components/ToastContainer';
 import { FileSystemItem } from './types';
 import { initialData, generateId, deleteItemRecursive, scanLocalDirectory, verifyPermission } from './utils/fsHelpers';
-import { Menu, Loader2, Info } from 'lucide-react';
+import { Menu, Loader2, Info, Moon, Sun } from 'lucide-react';
+import { Toast as ToastType } from './components/Toast';
 
 const STORAGE_KEY = 'streamnotes_fs_data';
 
 declare global {
   interface Window {
     showDirectoryPicker?: () => Promise<any>;
+    html2canvas?: (element: HTMLElement, options?: any) => Promise<HTMLCanvasElement>;
   }
 }
 
@@ -21,9 +24,35 @@ export default function App() {
   const [isLoaded, setIsLoaded] = useState(false);
   const [isLocalMode, setIsLocalMode] = useState(false);
   const [isLoadingFile, setIsLoadingFile] = useState(false);
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    // Load theme from localStorage or use system preference
+    const saved = localStorage.getItem('streamnotes_theme');
+    if (saved) return saved as 'light' | 'dark';
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  });
   
   // Cache for loaded image URLs (blob:...) for the current folder
   const [assets, setAssets] = useState<Record<string, string>>({});
+  
+  // Toast notifications state
+  const [toasts, setToasts] = useState<ToastType[]>([]);
+  
+  // Show a toast notification
+  const showToast = (message: string, type: 'success' | 'error' | 'warning' | 'info' = 'info', duration: number = 3000) => {
+    const id = generateId();
+    const newToast: ToastType = {
+      id,
+      message,
+      type,
+      duration
+    };
+    setToasts(prev => [...prev, newToast]);
+  };
+  
+  // Close a toast notification
+  const closeToast = (id: string) => {
+    setToasts(prev => prev.filter(toast => toast.id !== id));
+  };
 
   // Keep track of the root handle to enable operations at the root level
   const rootDirHandleRef = useRef<any>(null);
@@ -74,6 +103,22 @@ export default function App() {
       }
     }
   }, [fileSystem, activeFileId, sidebarOpen, isLoaded, isLocalMode]);
+
+  // Theme Management
+  useEffect(() => {
+    // Persist theme to localStorage
+    localStorage.setItem('streamnotes_theme', theme);
+    // Apply theme to DOM
+    document.documentElement.setAttribute('data-theme', theme);
+    // Apply theme to body
+    document.body.style.backgroundColor = `var(--bg-primary)`;
+    document.body.style.color = `var(--text-primary)`;
+  }, [theme]);
+
+  // Toggle Theme
+  const toggleTheme = () => {
+    setTheme(prev => prev === 'light' ? 'dark' : 'light');
+  };
 
   // --- ASSET MANAGEMENT ---
   
@@ -131,190 +176,300 @@ export default function App() {
   }, [activeFileId, fileSystem, isLocalMode]); // Re-run when file system changes (e.g. upload)
 
 
-  const handleImageUpload = async (file: File): Promise<string> => {
+  // Helper function: Validate image file
+  const validateImage = (file: File): void => {
     if (!activeFileId) throw new Error("No active file");
     
     const activeItem = fileSystem.find(i => i.id === activeFileId);
     if (!activeItem) throw new Error("File not found");
     
-    const parentId = activeItem.parentId;
+    // Check file type
+    if (!/\.(png|jpg|jpeg|gif|webp|svg)$/i.test(file.name)) {
+      throw new Error("Unsupported file type. Please upload an image file.");
+    }
+  };
+
+  // Helper function: Generate unique file name
+  const generateUniqueFileName = (file: File, parentId: string | null): string => {
     let fileName = file.name;
-    
-    // Simple renaming if file exists: image.png -> image (1).png
     let count = 1;
+    
     while (fileSystem.some(i => i.parentId === parentId && i.name === fileName)) {
-        const dotIndex = file.name.lastIndexOf('.');
-        if (dotIndex > 0) {
-            const name = file.name.substring(0, dotIndex);
-            const ext = file.name.substring(dotIndex);
-            fileName = `${name} (${count})${ext}`;
-        } else {
-            fileName = `${file.name} (${count})`;
-        }
-        count++;
+      const dotIndex = file.name.lastIndexOf('.');
+      if (dotIndex > 0) {
+        const name = file.name.substring(0, dotIndex);
+        const ext = file.name.substring(dotIndex);
+        fileName = `${name} (${count})${ext}`;
+      } else {
+        fileName = `${file.name} (${count})`;
+      }
+      count++;
+    }
+    
+    return fileName;
+  };
+
+  // Helper function: Save image to disk (local mode)
+  const saveImageToDisk = async (fileName: string, file: File, parentId: string | null): Promise<any> => {
+    let parentHandle = null;
+    if (parentId) {
+      const parentItem = fileSystem.find(i => i.id === parentId);
+      parentHandle = parentItem?.handle;
+    } else {
+      parentHandle = rootDirHandleRef.current;
     }
 
+    if (!parentHandle) throw new Error("No permission to write to folder");
+
+    // Create file
+    const newFileHandle = await parentHandle.getFileHandle(fileName, { create: true });
+    const writable = await newFileHandle.createWritable();
+    await writable.write(file);
+    await writable.close();
+    
+    return newFileHandle;
+  };
+
+  // Helper function: Save image to memory (browser mode)
+  const saveImageToMemory = (file: File): Promise<string> => {
+    // Warning: LocalStorage quota is small (5MB).
+    if (file.size > 1024 * 1024) {
+      const confirm = window.confirm("文件较大 (>1MB)，可能会导致浏览器缓存已满。建议使用“本地模式”或压缩图片。是否继续？");
+      if (!confirm) throw new Error("Cancelled by user");
+    }
+
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        resolve(reader.result as string);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
+
+  // Helper function: Create file system item
+  const createFileSystemItem = (fileName: string, parentId: string | null, handle: any = null, content?: string): FileSystemItem => {
+    return {
+      id: generateId(),
+      parentId,
+      name: fileName,
+      type: 'file',
+      content,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      handle,
+      isLoaded: true
+    };
+  };
+
+  const handleImageUpload = async (file: File): Promise<string> => {
+    validateImage(file);
+    
+    const activeItem = fileSystem.find(i => i.id === activeFileId);
+    const parentId = activeItem?.parentId;
+    const fileName = generateUniqueFileName(file, parentId);
+
     if (isLocalMode) {
-        // --- Local Mode: Write to Disk ---
-        let parentHandle = null;
-        if (parentId) {
-            const parentItem = fileSystem.find(i => i.id === parentId);
-            parentHandle = parentItem?.handle;
-        } else {
-            parentHandle = rootDirHandleRef.current;
-        }
-
-        if (!parentHandle) throw new Error("No permission to write to folder");
-
-        // Create file
-        const newFileHandle = await parentHandle.getFileHandle(fileName, { create: true });
-        const writable = await newFileHandle.createWritable();
-        await writable.write(file);
-        await writable.close();
-
-        // Update File System State
-        const newItem: FileSystemItem = {
-            id: generateId(),
-            parentId,
-            name: fileName,
-            type: 'file',
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-            handle: newFileHandle,
-            isLoaded: true // Binary content on disk
-        };
-        setFileSystem(prev => [...prev, newItem]);
-        
+      // --- Local Mode: Write to Disk ---
+      const newFileHandle = await saveImageToDisk(fileName, file, parentId);
+      const newItem = createFileSystemItem(fileName, parentId, newFileHandle);
+      setFileSystem(prev => [...prev, newItem]);
     } else {
-        // --- Memory Mode: Store as Base64 in content ---
-        // Warning: LocalStorage quota is small (5MB). 
-        if (file.size > 1024 * 1024) {
-            const confirm = window.confirm("文件较大 (>1MB)，可能会导致浏览器缓存已满。建议使用“本地模式”或压缩图片。是否继续？");
-            if (!confirm) throw new Error("Cancelled by user");
-        }
-
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => {
-                const base64 = reader.result as string;
-                
-                const newItem: FileSystemItem = {
-                    id: generateId(),
-                    parentId,
-                    name: fileName,
-                    type: 'file',
-                    content: base64, // Store data directly in content
-                    createdAt: Date.now(),
-                    updatedAt: Date.now(),
-                    isLoaded: true
-                };
-                
-                setFileSystem(prev => [...prev, newItem]);
-                resolve(fileName);
-            };
-            reader.onerror = reject;
-            reader.readAsDataURL(file);
-        });
+      // --- Memory Mode: Store as Base64 in content ---
+      const base64 = await saveImageToMemory(file);
+      const newItem = createFileSystemItem(fileName, parentId, undefined, base64);
+      setFileSystem(prev => [...prev, newItem]);
     }
 
     return fileName;
   };
 
-  const handleCleanupAssets = async () => {
-    if (!window.confirm("确定要清理未引用的图片吗？\n程序将扫描当前文件结构，删除所有未被 Markdown 文件引用的图片。此操作不可撤销。")) {
-        return;
+  // Helper function: Show confirmation dialog
+  const confirmCleanup = (): boolean => {
+    return window.confirm(
+      "确定要清理未引用的图片吗？\n程序将扫描当前文件结构，删除所有未被 Markdown 文件引用的图片。此操作不可撤销。"
+    );
+  };
+
+  // Helper function: Get combined content of all markdown files in a folder
+  const getMarkdownFilesContent = async (mdFiles: FileSystemItem[]): Promise<string> => {
+    let combinedContent = "";
+    
+    for (const md of mdFiles) {
+      let content = md.content || "";
+      
+      // In local mode, ensure we have the latest content
+      if (isLocalMode && md.handle && !md.isLoaded) {
+        try {
+          const f = await md.handle.getFile();
+          content = await f.text();
+        } catch (e) {
+          console.error(`无法读取文件 ${md.name} 进行扫描，跳过该文件`, e);
+          continue;
+        }
+      }
+      
+      combinedContent += content + "\n";
+    }
+    
+    return combinedContent;
+  };
+
+  // Helper function: Check if an image is referenced in the content
+  const isImageReferenced = (imgName: string, content: string): boolean => {
+    const escapedName = imgName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(escapedName, 'g');
+    return regex.test(content);
+  };
+
+  // Helper function: Scan a folder for orphaned images
+  const scanFolderForOrphanedImages = async (folderId: string | null, allFiles: FileSystemItem[]): Promise<FileSystemItem[]> => {
+    const siblings = allFiles.filter(i => i.parentId === folderId);
+    const mdFiles = siblings.filter(i => i.name.toLowerCase().endsWith('.md'));
+    const imgFiles = siblings.filter(i => /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(i.name));
+
+    if (imgFiles.length === 0) return [];
+
+    const combinedContent = await getMarkdownFilesContent(mdFiles);
+    const orphanedImages: FileSystemItem[] = [];
+
+    for (const img of imgFiles) {
+      if (!isImageReferenced(img.name, combinedContent)) {
+        orphanedImages.push(img);
+      }
     }
 
-    const itemsToDelete: FileSystemItem[] = [];
+    return orphanedImages;
+  };
+
+  // Helper function: Delete orphaned images
+  const deleteOrphanedImages = async (orphanedImages: FileSystemItem[]): Promise<number> => {
+    let deletedCount = 0;
+    for (const item of orphanedImages) {
+      await handleDeleteItem(item.id, true); // true = skip confirm
+      deletedCount++;
+    }
+    return deletedCount;
+  };
+
+  // Helper function: Show cleanup result
+  const showCleanupResult = (deletedCount: number): void => {
+    if (deletedCount === 0) {
+      showToast("未发现孤立图片。", "info");
+    } else {
+      showToast(`清理完成！已删除 ${deletedCount} 个未引用图片。`, "success");
+    }
+  };
+
+  // Main cleanup function
+  const handleCleanupAssets = async () => {
+    if (!confirmCleanup()) {
+      return;
+    }
+
     const allFiles = [...fileSystem];
-    
-    // Group files by parentId (folder) to respect relative paths context
     const folders = new Set(allFiles.map(i => i.parentId));
     folders.add(null);
 
-    // This operation might be slow on local FS with many files, show loading state ideally
-    // But for now we block.
-    
+    let allOrphanedImages: FileSystemItem[] = [];
+
+    // Scan all folders for orphaned images
     for (const folderId of folders) {
-        const siblings = allFiles.filter(i => i.parentId === folderId);
-        const mdFiles = siblings.filter(i => i.name.toLowerCase().endsWith('.md'));
-        const imgFiles = siblings.filter(i => /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(i.name));
-
-        if (imgFiles.length === 0) continue;
-
-        let combinedContent = "";
-        
-        // Aggregate all markdown content in this folder
-        for (const md of mdFiles) {
-            let content = md.content || "";
-            // In local mode, if content isn't loaded in memory, we might miss references.
-            // Ideally we should read the file. 
-            // For safety, if local mode file is NOT loaded, we will force read it to ensure we don't accidentally delete used images.
-            if (isLocalMode && md.handle && !md.isLoaded) {
-                 try {
-                     const f = await md.handle.getFile();
-                     content = await f.text();
-                 } catch (e) {
-                     console.error(`无法读取文件 ${md.name} 进行扫描，跳过该文件夹清理`, e);
-                     continue; // Skip scanning this folder to be safe
-                 }
-            }
-            combinedContent += content + "\n";
-        }
-
-        // Check if images are referenced in the combined content
-        for (const img of imgFiles) {
-             // Escape special chars for regex
-             const escapedName = img.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-             // Look for standard markdown syntax or html img tags that reference this filename
-             // Note: This is a loose check. It assumes unique filenames per folder (which FS enforces).
-             const regex = new RegExp(escapedName, 'g');
-             
-             if (!regex.test(combinedContent)) {
-                 itemsToDelete.push(img);
-             }
-        }
+      const orphanedImages = await scanFolderForOrphanedImages(folderId, allFiles);
+      allOrphanedImages = [...allOrphanedImages, ...orphanedImages];
     }
 
-    if (itemsToDelete.length === 0) {
-        alert("未发现孤立图片。");
-        return;
-    }
-
-    let deletedCount = 0;
-    for (const item of itemsToDelete) {
-        await handleDeleteItem(item.id, true); // true = skip confirm
-        deletedCount++;
-    }
-    
-    alert(`清理完成！已删除 ${deletedCount} 个未引用图片。`);
+    const deletedCount = await deleteOrphanedImages(allOrphanedImages);
+    showCleanupResult(deletedCount);
   };
 
   // --- EXISTING HANDLERS ---
 
+  // Helper function: Check browser support for File System Access API
+  const checkBrowserSupport = (): boolean => {
+    if (!window.showDirectoryPicker) {
+      showToast("您的浏览器不支持文件系统访问 API。请使用 Chrome 或 Edge 浏览器。", "warning");
+      return false;
+    }
+    return true;
+  };
+
+  // Helper function: Request directory access from user
+  const requestDirectoryAccess = async (): Promise<any> => {
+    try {
+      const dirHandle = await window.showDirectoryPicker();
+      return dirHandle;
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        // User cancelled the operation, no need to show alert
+        throw error;
+      }
+      throw new Error("无法打开文件夹: " + (error.message || "未知错误"));
+    }
+  };
+
+  // Helper function: Load directory content
+  const loadDirectoryContent = async (dirHandle: any): Promise<FileSystemItem[]> => {
+    setIsLoaded(false);
+    const items = await scanLocalDirectory(dirHandle);
+    return items;
+  };
+
+  // Helper function: Update application state after loading directory
+  const updateAppState = (items: FileSystemItem[], dirHandle: any): void => {
+    rootDirHandleRef.current = dirHandle;
+    setFileSystem(items);
+    setIsLocalMode(true);
+    setActiveFileId(null);
+    setIsLoaded(true);
+    setSidebarOpen(true);
+  };
+
+  // Helper function: Switch back to browser storage mode
+  const switchToBrowserMode = () => {
+    // Reset app state
+    rootDirHandleRef.current = null;
+    setIsLocalMode(false);
+    setActiveFileId(null);
+    
+    // Load data from localStorage if available
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          setFileSystem(parsed);
+        } else if (parsed.fileSystem) {
+          setFileSystem(parsed.fileSystem || initialData);
+        } else {
+          setFileSystem(initialData);
+        }
+      } catch (e) {
+        console.error("Failed to parse saved filesystem", e);
+        setFileSystem(initialData);
+      }
+    } else {
+      setFileSystem(initialData);
+    }
+    
+    showToast("已切换到浏览器存储模式", "success");
+  };
+
   const handleOpenLocalFolder = async () => {
     try {
-      if (!window.showDirectoryPicker) {
-        alert("您的浏览器不支持文件系统访问 API。请使用 Chrome 或 Edge 浏览器。");
+      if (!checkBrowserSupport()) {
         return;
       }
       
-      const dirHandle = await window.showDirectoryPicker();
-      rootDirHandleRef.current = dirHandle;
-
-      setIsLoaded(false);
-      const items = await scanLocalDirectory(dirHandle);
-      
-      setFileSystem(items);
-      setIsLocalMode(true);
-      setActiveFileId(null);
-      setIsLoaded(true);
-      setSidebarOpen(true);
+      const dirHandle = await requestDirectoryAccess();
+      const items = await loadDirectoryContent(dirHandle);
+      updateAppState(items, dirHandle);
     } catch (error: any) {
       console.error("Error opening directory:", error);
       setIsLoaded(true);
       if (error.name !== 'AbortError') {
-        alert("无法打开文件夹: " + (error.message || "未知错误"));
+        showToast(error.message, "error");
       }
     }
   };
@@ -395,7 +550,7 @@ export default function App() {
       i.parentId === item.parentId && i.id !== id && i.name.toLowerCase() === newName.trim().toLowerCase()
     );
     if (hasDuplicate) {
-      alert("重命名失败：该目录下已存在同名文件或文件夹。");
+      showToast("重命名失败：该目录下已存在同名文件或文件夹。", "error");
       return;
     }
 
@@ -419,25 +574,25 @@ export default function App() {
                try {
                    // Check if parentHandle has getDirectoryHandle method
                    if (typeof parentHandle.getDirectoryHandle === 'function') {
-                       // Create a new directory with the new name
-                       const newDirHandle = await parentHandle.getDirectoryHandle(newName, { create: true });
-                       
-                       // Move all children from old folder to new folder
-                       for await (const [childName, childHandle] of item.handle.entries()) {
-                           await childHandle.move(newDirHandle, childName);
-                       }
-                       
-                       // Delete the old folder
-                       await parentHandle.removeEntry(item.name, { recursive: false });
-                       
-                       newHandle = newDirHandle;
-                   } else {
-                       alert("当前浏览器不支持文件夹重命名操作。");
-                       return;
-                   }
+                // Create a new directory with the new name
+                const newDirHandle = await parentHandle.getDirectoryHandle(newName, { create: true });
+                
+                // Move all children from old folder to new folder
+                for await (const [childName, childHandle] of item.handle.entries()) {
+                    await childHandle.move(newDirHandle, childName);
+                }
+                
+                // Delete the old folder
+                await parentHandle.removeEntry(item.name, { recursive: false });
+                
+                newHandle = newDirHandle;
+            } else {
+                showToast("当前浏览器不支持文件夹重命名操作。", "warning");
+                return;
+            }
                } catch (err) {
                    console.error("Folder rename failed:", err);
-                   alert("文件夹重命名失败：" + (err as Error).message);
+                   showToast("文件夹重命名失败：" + (err as Error).message, "error");
                    return;
                }
            } else {
@@ -533,11 +688,11 @@ export default function App() {
   const activeFile = fileSystem.find(item => item.id === activeFileId);
 
   if (!isLoaded) {
-    return <div className="flex items-center justify-center h-screen bg-slate-50 text-slate-500 gap-2"><Loader2 className="animate-spin" /> 加载中...</div>;
+    return <div className="flex items-center justify-center h-screen bg-[var(--bg-primary)] text-[var(--text-tertiary)] gap-2"><Loader2 className="animate-spin" /> 加载中...</div>;
   }
 
   return (
-    <div className="flex h-screen w-full bg-white text-slate-900 font-sans overflow-hidden print:h-auto print:overflow-visible">
+    <div className="flex h-screen w-full bg-[var(--bg-primary)] text-[var(--text-primary)] font-sans overflow-hidden print:h-auto print:overflow-visible">
       <div className={`fixed inset-y-0 left-0 z-20 transform transition-transform duration-200 ease-in-out md:relative md:translate-x-0 print:hidden ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <Sidebar 
           items={fileSystem}
@@ -550,21 +705,24 @@ export default function App() {
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
           onOpenLocalFolder={handleOpenLocalFolder}
+          onSwitchToBrowserMode={switchToBrowserMode}
           onCleanupAssets={handleCleanupAssets}
           isLocalMode={isLocalMode}
+          theme={theme}
+          onToggleTheme={toggleTheme}
         />
       </div>
       {sidebarOpen && <div className="fixed inset-0 bg-black/20 z-10 md:hidden print:hidden" onClick={() => setSidebarOpen(false)}></div>}
       
       <div className="flex-1 flex flex-col h-full min-w-0 print:h-auto print:overflow-visible">
-        <div className="md:hidden flex items-center p-3 border-b border-slate-200 bg-white print:hidden">
-          <button onClick={() => setSidebarOpen(true)} className="p-1 mr-2 text-slate-600"><Menu size={20} /></button>
-          <span className="font-semibold text-slate-700">StreamNotes</span>
+        <div className="md:hidden flex items-center p-3 border-b border-[var(--border-color)] bg-[var(--bg-primary)] print:hidden">
+          <button onClick={() => setSidebarOpen(true)} className="p-1 mr-2 text-[var(--text-primary)]"><Menu size={20} /></button>
+          <span className="font-semibold text-[var(--text-primary)]">StreamNotes</span>
         </div>
 
         {activeFile ? (
           isLoadingFile ? (
-            <div className="flex-1 flex items-center justify-center text-slate-400 gap-2"><Loader2 className="animate-spin" /> 读取文件...</div>
+            <div className="flex-1 flex items-center justify-center text-[var(--text-tertiary)] gap-2"><Loader2 className="animate-spin" /> 读取文件...</div>
           ) : (
             <Editor 
               key={activeFile.id}
@@ -573,19 +731,26 @@ export default function App() {
               onUpdate={handleUpdateFile}
               onUploadImage={handleImageUpload}
               assets={assets}
+              theme={theme}
+              onShowToast={showToast}
             />
           )
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center text-slate-400 p-8 bg-slate-50/50 print:hidden">
-            <div className="w-16 h-16 bg-slate-100 rounded-2xl flex items-center justify-center mb-4 shadow-sm"><Info size={32} className="text-slate-300" /></div>
-            <p className="text-lg font-medium text-slate-600">没有选择笔记</p>
+          <div className="flex-1 flex flex-col items-center justify-center text-[var(--text-tertiary)] p-8 bg-[var(--bg-secondary)] print:hidden">
+            <div className="w-16 h-16 bg-[var(--bg-tertiary)] rounded-2xl flex items-center justify-center mb-4">
+              <Info size={32} className="text-[var(--text-tertiary)]" />
+            </div>
+            <p className="text-lg font-medium text-[var(--text-primary)]">没有选择笔记</p>
             <p className="text-sm mt-2 max-w-xs text-center">在侧边栏选择一个文件，或者创建一个新笔记开始写作。</p>
             {!isLocalMode && (
-              <button onClick={handleOpenLocalFolder} className="mt-6 px-4 py-2 bg-white border border-slate-200 hover:border-primary-300 hover:text-primary-600 text-slate-600 text-sm font-medium rounded-md shadow-sm transition-all">打开本地文件夹</button>
+              <button onClick={handleOpenLocalFolder} className="mt-6 px-4 py-2 bg-[var(--bg-primary)] border border-[var(--border-color)] hover:border-primary-300 hover:text-primary-600 text-[var(--text-primary)] text-sm font-medium rounded-md transition-all">打开本地文件夹</button>
             )}
           </div>
         )}
       </div>
+      
+      {/* Toast Notification Container */}
+      <ToastContainer toasts={toasts} onClose={closeToast} />
     </div>
   );
 }

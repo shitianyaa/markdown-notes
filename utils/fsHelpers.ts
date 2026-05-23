@@ -1,4 +1,4 @@
-import { FileSystemItem } from '../types';
+import { FileSystemItem, SearchMatch, SearchResult } from '../types';
 
 export const generateId = (): string => Math.random().toString(36).substring(2, 9);
 
@@ -85,6 +85,70 @@ export async function scanLocalDirectory(
   return items;
 }
 
+// Search Helper Functions
+
+// Find all matches in a string
+export const findMatches = (text: string, query: string): SearchMatch[] => {
+  if (!query || !text) return [];
+  
+  const matches: SearchMatch[] = [];
+  const regex = new RegExp(query, 'gi');
+  let match;
+  
+  while ((match = regex.exec(text)) !== null) {
+    matches.push({
+      text: match[0],
+      start: match.index,
+      end: match.index + match[0].length
+    });
+  }
+  
+  return matches;
+};
+
+// Search the file system for matches - only search in filenames
+export const searchFileSystem = (items: FileSystemItem[], query: string): SearchResult[] => {
+  if (!query.trim()) {
+    return items.map(item => ({
+      item,
+      matches: false,
+      matchCount: 0
+    }));
+  }
+  
+  const results: SearchResult[] = [];
+  
+  for (const item of items) {
+    let nameMatches: SearchMatch[] = [];
+    
+    // Check if it's a file or folder we want to show
+    const isMarkdownOrFolder = item.type === 'folder' || item.name.toLowerCase().endsWith('.md');
+    if (!isMarkdownOrFolder) {
+      results.push({
+        item,
+        matches: false,
+        matchCount: 0
+      });
+      continue;
+    }
+    
+    // Only search in name, not in content
+    nameMatches = findMatches(item.name, query);
+    
+    const matchCount = nameMatches.length;
+    const matches = matchCount > 0;
+    
+    results.push({
+      item,
+      matches,
+      nameMatches: nameMatches.length > 0 ? nameMatches : undefined,
+      matchCount
+    });
+  }
+  
+  return results;
+};
+
 // Initial Demo Data
 export const initialData: FileSystemItem[] = [
   { id: 'root-folder-1', parentId: null, name: '个人生活', type: 'folder', createdAt: Date.now(), updatedAt: Date.now(), isOpen: true, isLoaded: true },
@@ -129,7 +193,7 @@ StreamNotes 是一个**本地优先**且功能强大的 Markdown 笔记应用。
 
 控制您的写作视图。
 
-*   **🔗 同步 (同步滚动)**:
+*   **🔗 同步 (同步滚动)**: 
     *   *开启状态*: 滚动左侧编辑区，右侧预览区会智能跟随（反之亦然）。
     *   *关闭状态*: 两侧独立滚动。
 *   **✏️ (编辑模式)**: 仅显示编辑器，适合专注码字。
